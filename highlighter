@@ -1,0 +1,130 @@
+import os
+import shutil
+import subprocess
+from typing import Optional
+import fitz
+from PIL import Image, ImageDraw
+import pytesseract
+import pandas as pd
+
+class DocumentHighlighter:
+    def __init__(self, search_text: str):
+        self.search_text = search_text.strip()
+        if not self.search_text:
+            raise ValueError("Search text cannot be empty.")
+
+    def process(self, input_path: str) -> str:
+        ext = os.path.splitext(input_path)[1].lower()
+        if ext == ".pdf":
+            return self._highlight_pdf(input_path)
+
+        elif ext in {".png", ".jpg", ".jpeg", ".tiff", ".bmp"}:
+            return self._highlight_image(input_path)
+
+        elif ext in {".xlsx", ".xls", ".docx", ".doc"}:
+            pdf_path = self._convert_to_pdf(input_path)
+            return self._highlight_pdf(pdf_path, base_name=os.path.basename(input_path))
+
+        else:
+            raise ValueError(f"Unsupported file type: {ext}")
+
+    def _convert_to_pdf(self, input_path: str) -> str:
+        input_path = os.path.abspath(input_path)
+        out_dir = os.path.dirname(input_path)
+
+        soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+        if not soffice_path:
+            raise RuntimeError("LibreOffice ('soffice') not found.")
+
+        result = subprocess.run(
+            [soffice_path, "--headless", "--convert-to", "pdf", "--outdir", out_dir, input_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"LibreOffice conversion failed:\n{result.stderr}\n{result.stdout}")
+
+        pdf_path = os.path.splitext(input_path)[0] + ".pdf"
+        if not os.path.exists(pdf_path):
+            raise FileNotFoundError(f"Expected PDF not found at {pdf_path}")
+
+        return pdf_path
+
+    def _highlight_pdf(self, pdf_path: str, base_name: Optional[str] = None) -> str:
+        doc = fitz.open(pdf_path)
+        search = self.search_text
+
+        matches_total = 0
+
+        for page in doc:
+            rects = page.search_for(search, flags=1)
+            for rect in rects:
+                matches_total += 1
+                annot = page.add_rect_annot(rect)
+                annot.set_colors(stroke=(1, 0, 0))
+                annot.set_border(width=1)
+                annot.update()
+
+        if matches_total == 0:
+            print("No matches found in PDF.")
+
+        base = base_name if base_name else os.path.basename(pdf_path)
+        base_no_ext = os.path.splitext(base)[0]
+        output_path = f"{base_no_ext}_highlighted.pdf"
+        doc.save(output_path)
+        doc.close()
+
+        print(f"Created: {output_path} (matches: {matches_total})")
+        return output_path
+
+    def _highlight_image(self, image_path: str) -> str:
+        img = Image.open(image_path).convert("RGB")
+
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DATAFRAME)
+        data = data.dropna(subset=["text"])
+        data["text_norm"] = data["text"].astype(str).str.strip().str.lower()
+
+        target_words = self.search_text.lower().split()
+        if not target_words:
+            raise ValueError("Search text empty after normalization.")
+
+        draw = ImageDraw.Draw(img)
+        matches_total = 0
+
+        group_cols = ["block_num", "par_num", "line_num"]
+
+        for _, line_df in data.groupby(group_cols):
+            words = line_df["text_norm"].tolist()
+            coords = list(zip(line_df["left"], line_df["top"], line_df["width"], line_df["height"]))
+
+            n = len(words)
+            m = len(target_words)
+
+            for start in range(n - m + 1):
+                if words[start:start+m] == target_words:
+
+                    xs, ys, xe, ye = [], [], [], []
+                    for i in range(start, start+m):
+                        l, t, w, h = coords[i]
+                        xs.append(l)
+                        ys.append(t)
+                        xe.append(l + w)
+                        ye.append(t + h)
+
+                    bbox = (min(xs), min(ys), max(xe), max(ye))
+
+                    draw.rectangle(bbox, outline="red", width=2)
+                    matches_total += 1
+
+        if matches_total == 0:
+            print("No matches found in image.")
+
+        base = os.path.basename(image_path)
+        base_no_ext, _ = os.path.splitext(base)
+        output_path = f"{base_no_ext}_highlighted.png"
+        img.save(output_path)
+
+        print(f"Created: {output_path} (matches: {matches_total})")
+        return output_path
