@@ -1,0 +1,8 @@
+Script logs into Gmail, composes an email, and sends it to scittest@auditram.com
+using command-line inputs.
+Install: pip install selenium webdriver-manager
+Use personal Gmail, enable 2-Step Verification, create an App Password.
+Run:
+python email_automator.py --email "your@gmail.com" --password "APP_PASS" --subject "Test" --body "Message" --fresh-profile
+Script opens Chrome, logs in, writes the mail, sends it, and saves screenshots.
+If login fails, Google blocked automation → use App Password + personal Gmail.
